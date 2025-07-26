@@ -1,12 +1,61 @@
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'package:mobile_scanner/mobile_scanner.dart';
 
 class BarangKeluarScreen extends StatefulWidget {
   @override
   _BarangKeluarScreenState createState() => _BarangKeluarScreenState();
 }
 
+class QRScannerScreen extends StatefulWidget {
+  @override
+  State<QRScannerScreen> createState() => _QRScannerScreenState();
+}
+
+class _QRScannerScreenState extends State<QRScannerScreen> {
+  final MobileScannerController controller = MobileScannerController();
+  bool _isScanning = true;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Scan QR Code'),
+        backgroundColor: Colors.blue,
+      ),
+      body: MobileScanner(
+        controller: controller,
+        onDetect: (capture) {
+          if (!_isScanning) return;
+          final barcode = capture.barcodes.first;
+          if (barcode.rawValue == null) return;
+
+          final String raw = barcode.rawValue!;
+          debugPrint('Hasil QR: $raw');
+
+          final parts = raw.split(':');
+          String idOnly = raw;
+          if (parts.length >= 2) {
+            final afterColon = parts[1].trim();
+            idOnly = afterColon.split(RegExp(r'\s+')).first.trim();
+          }
+
+          setState(() {
+            _isScanning = false;
+          });
+
+          controller.stop();
+          Navigator.of(context).pop(idOnly);
+        },
+      ),
+    );
+  }
+}
+
 class _BarangKeluarScreenState extends State<BarangKeluarScreen> {
   final List<TextEditingController> _idBarangControllers = [TextEditingController()];
+  final List<TextEditingController> _jumlahBarangControllers = [TextEditingController()];
   final TextEditingController _namaBarangController = TextEditingController();
   final TextEditingController _tujuanController = TextEditingController();
   final TextEditingController _keteranganController = TextEditingController();
@@ -22,7 +71,6 @@ class _BarangKeluarScreenState extends State<BarangKeluarScreen> {
     for (var c in _idBarangControllers) {
       c.dispose();
     }
-    _namaBarangController.dispose();
     _tujuanController.dispose();
     _keteranganController.dispose();
     super.dispose();
@@ -31,6 +79,7 @@ class _BarangKeluarScreenState extends State<BarangKeluarScreen> {
   void _addIdBarangField() {
     setState(() {
       _idBarangControllers.add(TextEditingController());
+      _jumlahBarangControllers.add(TextEditingController());
     });
   }
 
@@ -38,7 +87,9 @@ class _BarangKeluarScreenState extends State<BarangKeluarScreen> {
     if (_idBarangControllers.length > 1) {
       setState(() {
         _idBarangControllers[index].dispose();
+        _jumlahBarangControllers[index].dispose();
         _idBarangControllers.removeAt(index);
+        _jumlahBarangControllers.removeAt(index);
       });
     }
   }
@@ -59,8 +110,9 @@ class _BarangKeluarScreenState extends State<BarangKeluarScreen> {
     );
   }
 
-  void _saveData() {
+  void _saveData() async {
     final enteredIds = _idBarangControllers.map((c) => c.text.trim()).where((id) => id.isNotEmpty).toList();
+    final enteredJumlah = _jumlahBarangControllers.map((c) => c.text.trim()).toList();
 
     final duplicate = _findDuplicateId(enteredIds);
     if (duplicate != null) {
@@ -68,28 +120,65 @@ class _BarangKeluarScreenState extends State<BarangKeluarScreen> {
       return;
     }
 
-    final namaBarang = _namaBarangController.text.trim();
     final tujuan = _tujuanController.text.trim();
     final keterangan = _keteranganController.text.trim();
 
-    if (enteredIds.isEmpty || namaBarang.isEmpty || tujuan.isEmpty) {
+    if (enteredIds.isEmpty || tujuan.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Semua data wajib diisi!'),
-          backgroundColor: Colors.red,
-        ),
+        SnackBar(content: Text('Semua data wajib diisi!')),
       );
       return;
     }
 
-    // TODO: Kirim ke backend dengan http.post
-    debugPrint('Data disimpan:');
-    debugPrint('ID Barang: $enteredIds');
-    debugPrint('Nama: $namaBarang, Tujuan: $tujuan, Keterangan: $keterangan');
+    final items = <Map<String, dynamic>>[];
+    for (var i = 0; i < enteredIds.length; i++) {
+      final jumlah = int.tryParse(enteredJumlah[i]) ?? 0;
+      if (jumlah <= 0) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Jumlah barang harus lebih dari 0')),
+        );
+        return;
+      }
+      items.add({
+        'id_barang': enteredIds[i],
+        'jumlah_barang': jumlah,
+      });
+    }
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Data berhasil disimpan!')),
-    );
+    final payload = {
+      'items': items,
+      'tujuan': tujuan,
+      'keterangan': keterangan,
+    };
+
+    debugPrint('Payload: $payload');
+
+    try {
+      final response = await http.post(
+        Uri.parse('http://192.168.56.96:8000/api/transaksi/barang-keluar'), // GANTI SESUAI ENDPOINT
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(payload),
+      );
+
+      debugPrint('Response status: ${response.statusCode}');
+      debugPrint('Response body: ${response.body}');
+
+      if (response.statusCode == 201) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Barang keluar berhasil dicatat!')),
+        );
+        _resetForm();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Gagal: ${response.body}')),
+        );
+      }
+    } catch (e) {
+      debugPrint('Error: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Terjadi kesalahan koneksi.')),
+      );
+    }
   }
 
   String? _findDuplicateId(List<String> ids) {
@@ -105,7 +194,9 @@ class _BarangKeluarScreenState extends State<BarangKeluarScreen> {
     for (var c in _idBarangControllers) {
       c.clear();
     }
-    _namaBarangController.clear();
+    for (var c in _jumlahBarangControllers) {
+      c.clear();
+    }
     _tujuanController.clear();
     _keteranganController.clear();
     setState(() {});
@@ -175,6 +266,29 @@ class _BarangKeluarScreenState extends State<BarangKeluarScreen> {
     );
   }
 
+  Future<void> _scanQrForIndex(int index) async {
+    final scanned = await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (ctx) => QRScannerScreen(),
+      ),
+    );
+
+    if (scanned != null && scanned is String) {
+      // Pisahkan ID dari teks, misal formatnya selalu: "Data Barang ID : <ID>"
+      final parts = scanned.split(':');
+      String idOnly = scanned; // fallback kalau parsing gagal
+
+      if (parts.length >= 2) {
+        idOnly = parts[1].trim(); // Ambil bagian setelah ':' dan hapus spasi
+      }
+
+      setState(() {
+        _idBarangControllers[index].text = idOnly;
+      });
+    }
+  }
+
+
   Widget _buildIdBarangFields() {
     return Column(
       children: List.generate(_idBarangControllers.length, (i) {
@@ -185,25 +299,32 @@ class _BarangKeluarScreenState extends State<BarangKeluarScreen> {
               Expanded(
                 child: TextField(
                   controller: _idBarangControllers[i],
-                  decoration: InputDecoration(
-                    labelText: 'ID Barang',
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                    filled: true,
-                    fillColor: Colors.white,
-                  ),
+                  decoration: InputDecoration(labelText: 'ID Barang'),
+                ),
+              ),
+              SizedBox(width: 8),
+              Expanded(
+                child: TextField(
+                  controller: _jumlahBarangControllers[i],
+                  decoration: InputDecoration(labelText: 'Jumlah'),
+                  keyboardType: TextInputType.number,
                 ),
               ),
               IconButton(
-                icon: Icon(Icons.add_circle, color: primaryBlue),
+              icon: Icon(Icons.qr_code_scanner),
+              onPressed: () => _scanQrForIndex(i),
+              ),
+              IconButton(
+                icon: Icon(Icons.add_circle),
                 onPressed: _addIdBarangField,
               ),
               if (i > 0)
                 IconButton(
-                  icon: Icon(Icons.remove_circle, color: Colors.red),
+                  icon: Icon(Icons.remove_circle),
                   onPressed: () => _removeIdBarangField(i),
                 ),
             ],
-          ),
+          )
         );
       }),
     );
@@ -244,16 +365,6 @@ class _BarangKeluarScreenState extends State<BarangKeluarScreen> {
                   Text('ID Barang', style: TextStyle(fontFamily: 'Poppins', fontWeight: FontWeight.bold)),
                   SizedBox(height: 8),
                   _buildIdBarangFields(),
-                  SizedBox(height: 16),
-                  TextField(
-                    controller: _namaBarangController,
-                    decoration: InputDecoration(
-                      labelText: 'Nama Barang',
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                      filled: true,
-                      fillColor: Colors.white,
-                    ),
-                  ),
                   SizedBox(height: 16),
                   TextField(
                     controller: _tujuanController,

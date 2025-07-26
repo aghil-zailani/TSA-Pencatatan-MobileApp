@@ -87,6 +87,19 @@ class _LoginScreenState extends State<LoginScreen>
         final String token = responseData['access_token'];
         final Map<String, dynamic> userData = responseData['user'];
 
+        final String userRole = userData['role'];
+
+        if (userRole != 'staff_gudang') {
+          Fluttertoast.showToast(
+            msg: "Akses Ditolak! Hanya Staff Gudang yang dapat login.",
+            toastLength: Toast.LENGTH_LONG,
+            backgroundColor: Colors.red,
+            textColor: Colors.white,
+          );
+          // Hentikan proses login jika peran tidak sesuai
+          return;
+        }
+
         await _storage.write(key: 'api_token', value: token);
         await _storage.write(key: 'user_name', value: userData['username']);
         await _storage.write(key: 'user_role', value: userData['role']);

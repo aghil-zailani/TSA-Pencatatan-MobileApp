@@ -1,6 +1,10 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:image/image.dart' as img;
 
 class FormFieldConfig {
   final String fieldName;
@@ -33,9 +37,11 @@ class FormFieldConfig {
       case 'tipe_barang': return Icons.category_outlined;
       case 'jumlah_barang': return Icons.numbers_outlined;
       case 'satuan': return Icons.straighten_outlined;
+      case 'jenis_barang': return Icons.category_outlined;
       case 'kondisi': return Icons.health_and_safety_outlined;
       case 'berat': return Icons.scale_outlined;
-      case 'tanggal_kadaluarsa': return Icons.calendar_today_outlined;
+      // case 'tanggal_kadaluarsa': return Icons.calendar_today_outlined;
+      case 'media': return Icons.science_outlined;
       case 'ukuran_barang': return Icons.square_foot_outlined;
       case 'panjang': return Icons.straighten;
       case 'lebar': return Icons.width_wide_outlined;
@@ -71,6 +77,9 @@ class _BarangMasukScreenState extends State<BarangMasukScreen> {
   final Map<String, String?> _selectedDropdownValues = {};
   List<String> _availableCategories = [];
 
+  bool _isProcessingOcr = false;
+  final TextRecognizer _textRecognizer = TextRecognizer();
+
   @override
   void initState() {
     super.initState();
@@ -78,14 +87,184 @@ class _BarangMasukScreenState extends State<BarangMasukScreen> {
       _selectedType = widget.initialType!;
     }
     _fetchAvailableCategories().then((_) {
-      _fetchFormData(_selectedType);
+      if (_selectedType.isNotEmpty) {
+        _fetchFormData(_selectedType);
+      }
     });
   }
 
   @override
   void dispose() {
     _controllers.forEach((key, controller) => controller.dispose());
+    _textRecognizer.close();
     super.dispose();
+  }
+
+  Future<void> _pickAndProcessImage(ImageSource source) async {
+    setState(() { _isProcessingOcr = true; });
+    try {
+      final ImagePicker picker = ImagePicker();
+      final XFile? imageFile = await picker.pickImage(source: source);
+
+      if (imageFile == null) {
+        setState(() { _isProcessingOcr = false; });
+        return;
+      }
+
+      final bytes = await imageFile.readAsBytes();
+      img.Image? originalImage = img.decodeImage(bytes);
+      if (originalImage == null) {
+        setState(() { _isProcessingOcr = false; });
+        return;
+      }
+      final grayscaleImage = img.grayscale(originalImage);
+      final processedBytes = img.encodeJpg(grayscaleImage);
+      final processedFile = await File(imageFile.path).writeAsBytes(processedBytes);
+
+      final inputImage = InputImage.fromFile(processedFile);
+      final RecognizedText recognizedText = await _textRecognizer.processImage(inputImage);
+
+      _parseOcrTextAndFillForm(recognizedText);
+
+    } catch (e) {
+      print("Error during OCR process: $e");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Gagal memproses gambar.'), backgroundColor: Colors.red),
+      );
+    } finally {
+      setState(() { _isProcessingOcr = false; });
+    }
+  }
+
+  // --- FUNGSI PARSING OCR YANG BARU ---
+
+  void _parseOcrTextAndFillForm(RecognizedText recognizedText) {
+    final List<String> ocrLines = [];
+    for (TextBlock block in recognizedText.blocks) {
+      for (TextLine line in block.lines) {
+        ocrLines.add(line.text);
+      }
+    }
+    print("--- Teks Hasil OCR (per baris) ---\n${ocrLines.join('\n')}\n--------------------");
+
+    final Map<String, String> extractedData = _extractDataFromOCR(ocrLines);
+
+    extractedData.forEach((key, value) {
+      if (value.isNotEmpty) {
+        if (_controllers.containsKey(key)) {
+          _controllers[key]?.text = value;
+        } else if (_selectedDropdownValues.containsKey(key)) {
+          final options = _getManualDropdownOptions(key);
+          for (var option in options) {
+            if (option.toLowerCase() == value.toLowerCase()) {
+              _selectedDropdownValues[key] = option;
+              break;
+            }
+          }
+        }
+      }
+    });
+
+    setState(() {});
+  }
+
+  // --- LOGIKA OCR CANGGIH ---
+  static const knownBrands = [
+    'SERVVO', 'YAMATO', 'SEMPATI', 'NOTIFIER', 'HOCHIKI', 'CHUBB', 'TYCO', 'ANGUS FIRE', 'FM 200 SUPRESSION'
+  ];
+
+  int levenshtein(String s, String t) {
+    if (s == t) return 0;
+    if (s.isEmpty) return t.length;
+    if (t.isEmpty) return s.length;
+
+    List<List<int>> matrix =
+    List.generate(s.length + 1, (_) => List.filled(t.length + 1, 0));
+
+    for (var i = 0; i <= s.length; i++) matrix[i][0] = i;
+    for (var j = 0; j <= t.length; j++) matrix[0][j] = j;
+
+    for (var i = 1; i <= s.length; i++) {
+      for (var j = 1; j <= t.length; j++) {
+        final cost = s[i - 1] == t[j - 1] ? 0 : 1;
+        matrix[i][j] = [
+          matrix[i - 1][j] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j - 1] + cost
+        ].reduce((a, b) => a < b ? a : b);
+      }
+    }
+    return matrix[s.length][t.length];
+  }
+
+  String? detectClosestBrand(String line) {
+    String cleaned = line.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
+    int threshold = 2; // toleransi typo: 2 huruf beda
+
+    for (final brand in knownBrands) {
+      int distance = levenshtein(cleaned, brand);
+      if (distance <= threshold) return brand;
+    }
+    return null;
+  }
+
+  Map<String, String> _extractDataFromOCR(List<String> ocrLines) {
+    final result = <String, String>{};
+    final fullText = ocrLines.join(' ').toUpperCase();
+
+    // --- 1. Deteksi Berat & Satuan ---
+    final beratRegex = RegExp(r'(\d+)\s*(KG|G|GRAM|L|LTR|LITER)', caseSensitive: false);
+    final matchBerat = beratRegex.firstMatch(fullText);
+    if (matchBerat != null) {
+      result['berat'] = matchBerat.group(1)!;
+      result['satuan'] = matchBerat.group(2)!.toUpperCase();
+      print("Ditemukan -> berat: ${result['berat']} ${result['satuan']}");
+    }
+
+    // --- 2. Deteksi Media ---
+    final mediaRegex = RegExp(r'\b(ABC|CO2|POWDER|FOAM)\b', caseSensitive: false);
+    final matchMedia = mediaRegex.firstMatch(fullText);
+    if (matchMedia != null) {
+      result['media'] = matchMedia.group(1)!.toUpperCase();
+      print("Ditemukan -> media: ${result['media']}");
+    }
+
+    // --- 3. Deteksi Tipe Barang (APAR, HYDRANT, dll) ---
+    if (fullText.contains('EXTINGUISHER') || fullText.contains('APAR')) {
+      result['tipe_barang'] = 'APAR';
+      print("Ditemukan -> tipe_barang: APAR");
+    } else if (fullText.contains('HYDRANT')) {
+      result['tipe_barang'] = 'Hydrant';
+      print("Ditemukan -> tipe_barang: Hydrant");
+    }
+
+    // --- 4. PERBAIKAN: Deteksi Merek & Nama Barang dengan Levenshtein ---
+    for (final line in ocrLines) {
+      final cleanLine = line.trim().toUpperCase();
+      if (cleanLine.isNotEmpty && cleanLine.length > 2) {
+        final detectedBrand = detectClosestBrand(cleanLine);
+        if (detectedBrand != null) {
+          result['nama_barang'] = detectedBrand;
+          result['merek'] = detectedBrand;
+          print("Ditemukan -> nama_barang (dari merek): $detectedBrand");
+          break; // Hentikan pencarian setelah merek ditemukan
+        }
+      }
+    }
+
+    if (result['nama_barang'] == null || result['nama_barang']!.isEmpty) {
+      for (final brand in knownBrands) {
+        final distance = levenshtein(fullText.replaceAll(' ', ''), brand.replaceAll(' ', ''));
+        if (distance <= 3) {
+          result['nama_barang'] = brand;
+          result['merek'] = brand;
+          print("Fallback fuzzy brand detection: $brand");
+          break;
+        }
+      }
+    }
+
+    return result;
   }
 
   Future<void> _fetchAvailableCategories() async {
@@ -96,11 +275,16 @@ class _BarangMasukScreenState extends State<BarangMasukScreen> {
         final Map<String, dynamic> data = json.decode(response.body);
         final List<dynamic> categories = data['categories'];
         setState(() {
-          _availableCategories = categories.cast<String>();
+          _availableCategories = categories
+              .cast<String>()
+              .where((c) => c != 'Sparepart' && c != 'Barang Keluar')
+              .toList();
+
           if (!_availableCategories.contains(_selectedType)) {
-            _selectedType = _availableCategories.first;
+            _selectedType = _availableCategories.isNotEmpty ? _availableCategories.first : '';
           }
         });
+
       } else {
         print('Gagal memuat kategori: ${response.statusCode}');
       }
@@ -166,18 +350,16 @@ class _BarangMasukScreenState extends State<BarangMasukScreen> {
   }
 
   bool _isManualDropdown(String fieldName) {
-    return fieldName == 'tipe_barang' || fieldName == 'satuan';
+    return fieldName == 'satuan' || fieldName == 'jenis_barang' || fieldName == 'kondisi';
   }
 
   List<String> _getManualDropdownOptions(String fieldName) {
-    if (fieldName == 'tipe_barang') {
-      if (_selectedType == 'APAR') {
-        return ['ABC Powder', 'Foam', 'CO2'];
-      } else if (_selectedType == 'Hydrant') {
-        return ['Pilar', 'Hydrant Box'];
-      }
-    } else if (fieldName == 'satuan') {
+    if (fieldName == 'satuan') {
       return ['Kg', 'Pcs', 'Meter', 'Liter'];
+    } else if (fieldName == 'jenis_barang'){
+      return ['Foam', 'CO2', 'ABC Powder', 'Karbon Dioksida'];
+    } else if (fieldName == 'kondisi'){
+      return ['Bagus', 'Rusak', 'Expired'];
     }
     return [];
   }
@@ -199,12 +381,18 @@ class _BarangMasukScreenState extends State<BarangMasukScreen> {
     }
   }
 
-  void _saveData() {
+  void _saveData() async {
     Map<String, dynamic> dataToSave = {
       'tipe_barang_kategori': _selectedType,
     };
 
+    String? namaBarang;
+
     for (var config in _currentFormConfigs) {
+      if (config.fieldName == 'tipe_barang') {
+        continue;
+      }
+
       dynamic value;
       if (config.inputType == 'dropdown' || _isManualDropdown(config.fieldName)) {
         value = _selectedDropdownValues[config.fieldName];
@@ -212,33 +400,112 @@ class _BarangMasukScreenState extends State<BarangMasukScreen> {
         value = _controllers[config.fieldName]?.text;
       }
 
+      if (config.fieldName == 'jumlah_barang') {
+        int? parsed = int.tryParse(value ?? '');
+        if (parsed == null || parsed <= 0) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Jumlah Barang harus berupa angka valid!'),
+              backgroundColor: Colors.red,
+            ),
+          );
+          return;
+        }
+        value = parsed;
+      }
+
       if (config.isRequired && (value == null || value.toString().isEmpty)) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('${config.labelDisplay} wajib diisi!'),
             backgroundColor: Colors.red,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
-            ),
           ),
         );
         return;
       }
+
+      if (config.fieldName == 'nama_barang') {
+        namaBarang = value;
+      }
+
       dataToSave[config.fieldName] = value;
     }
 
-    print('Data yang akan disimpan: $dataToSave');
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Data berhasil disimpan!'),
-        backgroundColor: primaryBlue,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(8),
+    if (_selectedType != 'Sparepart' && _selectedType != 'Barang Keluar') {
+      dataToSave['tipe_barang'] = 'Barang Jadi';
+    }
+
+    if (namaBarang == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Nama barang wajib diisi!'),
+          backgroundColor: Colors.red,
         ),
-      ),
+      );
+      return;
+    }
+
+    // 2) Cek increment dari API
+    const String baseUrl = 'http://192.168.56.96:8000/api';
+
+    // 3) Kirim ke DB
+    final postResponse = await http.post(
+      Uri.parse('$baseUrl/pengajuan-barangs'),
+      headers: {'Content-Type': 'application/json'},
+      body: json.encode(dataToSave),
     );
+
+    // BLOK KODE BARU DENGAN PENANGANAN ERROR DETAIL
+    if (postResponse.statusCode == 200 || postResponse.statusCode == 201) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Data berhasil disimpan!'),
+          backgroundColor: Colors.green,
+        ),
+      );
+      // Optional: Kosongkan form setelah berhasil
+      _controllers.forEach((key, controller) => controller.clear());
+      _selectedDropdownValues.clear();
+      setState(() {});
+
+    } else {
+      String errorMessage = 'Gagal menyimpan data. Status: ${postResponse.statusCode}';
+
+      // Cek jika ini adalah error validasi dari Laravel
+      if (postResponse.statusCode == 422) {
+        print("--- VALIDATION ERROR ---");
+        print(postResponse.body);
+        print("------------------------");
+
+        try {
+          final responseBody = json.decode(postResponse.body);
+          final Map<String, dynamic> errors = responseBody['errors'];
+
+          // Ambil NAMA FIELD dan PESAN ERROR dari response Laravel
+          final firstEntry = errors.entries.first;
+          final fieldName = firstEntry.key; // -> Ini nama fieldnya
+          final errorText = firstEntry.value[0]; // -> Ini pesan errornya
+
+          // Gabungkan keduanya untuk pesan yang jauh lebih jelas
+          errorMessage = "Error pada field '$fieldName': $errorText";
+
+        } catch (e) {
+          errorMessage = "Terjadi error validasi, cek konsol debug.";
+        }
+      } else {
+        // Untuk error server lainnya (spt: 500)
+        print("--- SERVER ERROR ---");
+        print(postResponse.body);
+        print("--------------------");
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(errorMessage),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 
   Future<void> _selectDate(BuildContext context, TextEditingController controller) async {
@@ -654,6 +921,53 @@ class _BarangMasukScreenState extends State<BarangMasukScreen> {
     }
   }
 
+  Widget _buildOcrCard() {
+    return Container(
+      padding: EdgeInsets.all(20),
+      margin: EdgeInsets.only(bottom: 20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [ BoxShadow(color: primaryBlue.withOpacity(0.1), blurRadius: 16, offset: Offset(0, 4)) ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: EdgeInsets.all(8),
+                decoration: BoxDecoration(color: surfaceBlue, borderRadius: BorderRadius.circular(8)),
+                child: Icon(Icons.camera_alt_outlined, color: primaryBlue, size: 20),
+              ),
+              SizedBox(width: 12),
+              Text('Scan Data Barang', style: TextStyle(fontFamily: 'Poppins', fontSize: 18, fontWeight: FontWeight.w600, color: darkBlue)),
+            ],
+          ),
+          SizedBox(height: 16),
+          Text(
+            'Gunakan kamera untuk mengisi form secara otomatis dari label barang.',
+            style: TextStyle(fontFamily: 'Poppins', color: Colors.grey[600]),
+          ),
+          SizedBox(height: 16),
+          _isProcessingOcr
+              ? Center(child: CircularProgressIndicator())
+              : ElevatedButton.icon(
+            icon: Icon(Icons.camera_enhance_rounded),
+            label: Text('Buka Kamera & Scan'),
+            onPressed: () => _pickAndProcessImage(ImageSource.camera),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: primaryBlue,
+              foregroundColor: Colors.white,
+              padding: EdgeInsets.symmetric(vertical: 12),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildFormCard() {
     if (_currentFormConfigs.isEmpty) {
       return Container(
@@ -770,7 +1084,10 @@ class _BarangMasukScreenState extends State<BarangMasukScreen> {
             ],
           ),
           SizedBox(height: 24),
-          ..._currentFormConfigs.map((config) => _buildInputField(config)).toList(),
+          ..._currentFormConfigs
+              .where((config) => config.fieldName != 'tipe_barang')
+              .map((config) => _buildInputField(config))
+              .toList(),
         ],
       ),
     );
@@ -888,6 +1205,8 @@ class _BarangMasukScreenState extends State<BarangMasukScreen> {
           children: [
             _buildHeader(),
             _buildCategoryCard(),
+            if (_selectedType == 'APAR')
+              _buildOcrCard(),
             _buildFormCard(),
             SizedBox(height: 24),
             _buildActionButtons(),
