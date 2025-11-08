@@ -101,6 +101,7 @@ class _LoginScreenState extends State<LoginScreen>
         }
 
         await _storage.write(key: 'api_token', value: token);
+        await _storage.write(key: 'user_id', value: userData['id'].toString());
         await _storage.write(key: 'user_name', value: userData['username']);
         await _storage.write(key: 'user_role', value: userData['role']);
 

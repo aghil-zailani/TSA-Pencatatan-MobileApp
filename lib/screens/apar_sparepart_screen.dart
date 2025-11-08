@@ -1,3 +1,4 @@
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
@@ -96,7 +97,7 @@ class _SparepartScreenState extends State<SparepartScreen> {
       _controllers.clear();
     });
 
-    const String baseUrl = 'http://192.168.56.96:8000/api'; // Ganti IP sesuai jaringanmu
+    const String baseUrl = 'http://192.168.100.137:8000/api'; // Ganti IP sesuai jaringanmu
     try {
       final configResponse = await http.get(Uri.parse('$baseUrl/form-configs/$formType'));
 
@@ -135,7 +136,7 @@ class _SparepartScreenState extends State<SparepartScreen> {
 
   // Mengambil opsi untuk dropdown dari API
   Future<List<String>> _fetchDropdownOptions(String fieldName) async {
-    const String baseUrl = 'http://192.168.56.96:8000/api';
+    const String baseUrl = 'http://192.168.100.137:8000/api';
     try {
       final response = await http.get(Uri.parse('$baseUrl/master-data/$fieldName'));
       if (response.statusCode == 200) {
@@ -150,6 +151,22 @@ class _SparepartScreenState extends State<SparepartScreen> {
 
   // Menyimpan data ke backend
   void _saveData() async {
+    final _storage = FlutterSecureStorage();
+
+    // 3. Ambil token dari storage
+    final String? token = await _storage.read(key: 'api_token');
+
+    // 4. Validasi token untuk memastikan user sudah login
+    if (token == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Sesi Anda telah berakhir. Silakan login kembali.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
     Map<String, dynamic> dataToSave = {
       'tipe_barang_kategori': 'Sparepart', // Kategori sudah pasti "Sparepart"
     };
@@ -179,10 +196,18 @@ class _SparepartScreenState extends State<SparepartScreen> {
       dataToSave['tipe_barang'] = 'Sparepart';
     }
 
-    const String baseUrl = 'http://192.168.56.96:8000/api';
+    const String baseUrl = 'http://192.168.100.137:8000/api';
+
+    final Map<String, String> headers = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json', // <-- Penting agar Laravel membalas dengan JSON
+      'Authorization': 'Bearer $token', // <-- Penting untuk otentikasi
+    };
+
+    // 6. Gunakan headers yang sudah dibuat saat melakukan request
     final postResponse = await http.post(
       Uri.parse('$baseUrl/pengajuan-barangs'),
-      headers: {'Content-Type': 'application/json'},
+      headers: headers, // <-- Gunakan headers di sini
       body: json.encode(dataToSave),
     );
 

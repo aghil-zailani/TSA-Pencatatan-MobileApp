@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:image/image.dart' as img;
 
@@ -268,7 +269,8 @@ class _BarangMasukScreenState extends State<BarangMasukScreen> {
   }
 
   Future<void> _fetchAvailableCategories() async {
-    const String baseUrl = 'http://192.168.56.96:8000/api';
+    // const String baseUrl = 'http://192.168.56.96:8000/api';
+    const String baseUrl = 'http://192.168.100.137:8000/api';
     try {
       final response = await http.get(Uri.parse('$baseUrl/master-data/category_name'));
       if (response.statusCode == 200) {
@@ -382,6 +384,24 @@ class _BarangMasukScreenState extends State<BarangMasukScreen> {
   }
 
   void _saveData() async {
+    final _storage = FlutterSecureStorage();
+
+    // 2. Ambil token yang tersimpan
+    final String? token = await _storage.read(key: 'api_token');
+
+    // 3. Validasi: Pastikan user sudah login (token ada)
+    if (token == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Sesi Anda telah berakhir. Silakan login kembali.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      // Opsional: Arahkan ke halaman login
+      // Navigator.pushReplacementNamed(context, '/login');
+      return;
+    }
+
     Map<String, dynamic> dataToSave = {
       'tipe_barang_kategori': _selectedType,
     };
@@ -448,10 +468,16 @@ class _BarangMasukScreenState extends State<BarangMasukScreen> {
     // 2) Cek increment dari API
     const String baseUrl = 'http://192.168.56.96:8000/api';
 
-    // 3) Kirim ke DB
+    final Map<String, String> headers = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'Authorization': 'Bearer $token', // INI BAGIAN PALING PENTING
+    };
+
+    // 5. Kirim ke DB menggunakan headers yang sudah disiapkan
     final postResponse = await http.post(
       Uri.parse('$baseUrl/pengajuan-barangs'),
-      headers: {'Content-Type': 'application/json'},
+      headers: headers, // Gunakan headers di sini
       body: json.encode(dataToSave),
     );
 

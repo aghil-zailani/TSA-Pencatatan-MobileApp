@@ -155,7 +155,8 @@ class _BarangKeluarScreenState extends State<BarangKeluarScreen> {
 
     try {
       final response = await http.post(
-        Uri.parse('http://192.168.56.96:8000/api/transaksi/barang-keluar'), // GANTI SESUAI ENDPOINT
+        // Uri.parse('http://192.168.56.96:8000/api/transaksi/barang-keluar'), // GANTI SESUAI ENDPOINT
+        Uri.parse('http://192.168.100.137:8000/api/transaksi/barang-keluar'), // GANTI SESUAI ENDPOINT
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode(payload),
       );
